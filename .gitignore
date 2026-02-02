@@ -1,0 +1,30 @@
+# .gitignore for lock-pc-server (Node.js)
+
+# Node modules
+node_modules/
+
+# Environment files
+.env
+
+# Logs and runtime data
+*.log
+all-logs.txt
+server-logs.json
+server-error-logs.json
+recent-handshake-logs.json
+cookies.txt
+
+# Backups and local data
+backups/
+*.sqlite
+*.db
+
+# Build / deployment
+dist/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+node_modules
+.env
