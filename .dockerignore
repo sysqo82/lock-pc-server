@@ -1,0 +1,15 @@
+node_modules
+.env
+npm-debug.log
+Dockerfile
+cloudbuild.yaml
+README.md
+.git
+.gitignorenode_modules
+npm-debug.log
+server.db
+.git
+.gcloud
+cloudbuild.yaml
+.gitignore
+README.md

@@ -1,0 +1,302 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f0f2f5;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+
+.login-container {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    width: 100%;
+    max-width: 400px;
+}
+
+.login-container h2 {
+    text-align: center;
+    margin-bottom: 1.5rem;
+    color: #333;
+}
+
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: #666;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+button {
+    width: 100%;
+    padding: 0.75rem;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+.dashboard-container {
+    width: 90%;
+    max-width: 1200px;
+    margin: 2rem auto;
+    height: auto;
+    display: block;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.pc-card {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    margin-bottom: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.status-online {
+    color: green;
+    font-weight: bold;
+}
+
+.status-offline {
+    color: red;
+    font-weight: bold;
+}
+
+.controls button {
+    width: auto;
+    margin-left: 0.5rem;
+    padding: 0.5rem 1rem;
+}
+
+.btn-lock {
+    background-color: #dc3545;
+}
+
+.btn-unlock {
+    background-color: #28a745;
+}
+
+.block-period-container {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    margin-top: 2rem;
+}
+
+.block-period-container h2 {
+    margin-top: 0;
+    color: #333;
+}
+
+.time-inputs, .day-selectors, .form-buttons {
+    margin-bottom: 1rem;
+}
+
+.time-inputs {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.time-inputs label {
+    margin: 0;
+    font-weight: 500;
+}
+
+.time-inputs input[type="time"] {
+    width: 110px;
+    padding: 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.day-selectors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.day-selectors label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0.4rem 0.6rem;
+    background-color: #f5f5f5;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.day-selectors label:hover {
+    background-color: #e8e8e8;
+}
+
+.day-selectors input[type="checkbox"] {
+    margin: 0;
+}
+
+/* Mobile responsive */
+@media (max-width: 600px) {
+    .time-inputs {
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.5rem;
+    }
+    
+    .time-inputs > * {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        width: 100%;
+        justify-content: space-between; /* label left, picker right */
+    }
+    
+    .time-inputs input[type="time"] {
+        flex: 0 0 110px; /* same width for both, aligned right */
+    }
+    
+    .day-selectors label {
+        padding: 0.5rem 0.7rem;
+        font-size: 0.95rem;
+    }
+}
+
+.form-buttons button {
+    width: auto;
+    margin-right: 0.5rem;
+    padding: 0.5rem 1rem;
+}
+
+/* Probe button and PC actions: override default full-width button */
+.pc-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.pc-actions button, .btn-probe {
+    width: auto;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.95rem;
+    border-radius: 4px;
+    background-color: #007bff;
+    color: #fff;
+    border: none;
+    cursor: pointer;
+}
+
+.btn-probe:hover { background-color: #0056b3; }
+
+.btn-save {
+    background-color: #007bff;
+}
+
+.btn-cancel {
+    background-color: #6c757d;
+}
+
+.btn-delete {
+    background-color: #dc3545;
+    width: auto;
+    padding: 0.5rem 1rem;
+    margin-top: 1rem;
+}
+
+.block-periods-area {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    margin-top: 2rem;
+}
+
+.block-period-item {
+    border: 2px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #fafafa;
+}
+
+.bp-info {
+    flex: 1;
+}
+
+.bp-info strong {
+    font-size: 1.1rem;
+    color: #333;
+}
+
+.bp-days {
+    color: #666;
+    font-size: 0.9rem;
+    margin-top: 0.25rem;
+}
+
+.bp-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.btn-edit, .btn-delete {
+    width: auto;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.9rem;
+    margin: 0;
+}
+
+.btn-edit {
+    background-color: #007bff;
+}
+
+.btn-edit:hover {
+    background-color: #0056b3;
+}
+
+.btn-delete:hover {
+    background-color: #c82333;
+}
+
+.block-period-form-wrapper {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid #e0e0e0;
+}

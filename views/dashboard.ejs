@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PC Monitor Dashboard</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body style="display: block;">
+    <div class="dashboard-container">
+        <div class="header">
+            <h1>PC Activity Monitor</h1>
+            <a href="/logout" style="color: #666; text-decoration: none;">Logout</a>
+        </div>
+
+        <div id="pc-list">
+            <!-- PC list will be populated here -->
+        </div>
+
+        <div class="block-periods-area">
+            <h2>Your Block Periods</h2>
+
+            <div id="block-periods-list">
+                <!-- List of block periods will be injected here -->
+            </div>
+
+            <div class="block-period-form-wrapper">
+                <h3 id="form-title">Add Block Period</h3>
+                <form id="block-period-form">
+                    <div class="time-inputs">
+                        <div>
+                            <label for="from-time">From:</label>
+                            <input type="time" id="from-time" name="from-time" required>
+                        </div>
+                        <div>
+                            <label for="to-time">To:</label>
+                            <input type="time" id="to-time" name="to-time" required>
+                        </div>
+                    </div>
+                    <div class="day-selectors">
+                        <label><input type="checkbox" name="day" value="mon"> Mon</label>
+                        <label><input type="checkbox" name="day" value="tue"> Tue</label>
+                        <label><input type="checkbox" name="day" value="wed"> Wed</label>
+                        <label><input type="checkbox" name="day" value="thu"> Thu</label>
+                        <label><input type="checkbox" name="day" value="fri"> Fri</label>
+                        <label><input type="checkbox" name="day" value="sat"> Sat</label>
+                        <label><input type="checkbox" name="day" value="sun"> Sun</label>
+                    </div>
+                    <div class="form-buttons">
+                        <button type="submit" class="btn-save">Save</button>
+                        <button type="button" class="btn-cancel">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/block_periods.js"></script>
+</body>
+</html>

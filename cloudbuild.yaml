@@ -1,0 +1,22 @@
+steps:
+# Build the container image
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/$PROJECT_ID/lock-pc-server', '.']
+# Push the container image to Container Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/$PROJECT_ID/lock-pc-server']
+# Deploy container image to Cloud Run
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args: [
+    'run', 'deploy', 'lock-pc-server', 
+    '--image', 'gcr.io/$PROJECT_ID/lock-pc-server', 
+    '--region', 'us-central1', 
+    '--platform', 'managed', 
+    '--timeout', '300s',
+    '--add-cloudsql-instances', 'lock-pc-server:us-central1:lock-pc-instance',
+    '--set-env-vars', 'DB_HOST=/cloudsql/lock-pc-server:us-central1:lock-pc-instance,DB_USER=sysqo82,DB_DATABASE=lockpc_db',
+    '--set-secrets', 'DB_PASSWORD=lock-pc-db-password:latest'
+  ]
+images:
+- gcr.io/$PROJECT_ID/lock-pc-server

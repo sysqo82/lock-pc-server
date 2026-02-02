@@ -1,0 +1,90 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  annotations:
+    run.googleapis.com/client-name: gcloud
+    run.googleapis.com/client-version: 553.0.0
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    run.googleapis.com/maxScale: '20'
+    run.googleapis.com/operation-id: d10780b3-ea55-43e0-900c-3542f085f524
+    run.googleapis.com/urls: '["https://lock-pc-server-233042610627.us-central1.run.app","https://lock-pc-server-ofzd62cvwq-uc.a.run.app"]'
+    serving.knative.dev/creator: 233042610627-compute@developer.gserviceaccount.com
+    serving.knative.dev/lastModifier: 233042610627-compute@developer.gserviceaccount.com
+  creationTimestamp: '2026-01-25T09:55:44.809908Z'
+  generation: 29
+  labels:
+    cloud.googleapis.com/location: us-central1
+  name: lock-pc-server
+  namespace: '233042610627'
+  resourceVersion: AAZJTL8H1yM
+  selfLink: /apis/serving.knative.dev/v1/namespaces/233042610627/services/lock-pc-server
+  uid: b0c28bde-dc1e-4f63-b023-4818f57427fd
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '20'
+        run.googleapis.com/client-name: gcloud
+        run.googleapis.com/client-version: 553.0.0
+        run.googleapis.com/cloudsql-instances: lock-pc-server:us-central1:lock-pc-instance
+        run.googleapis.com/startup-cpu-boost: 'true'
+      labels:
+        client.knative.dev/nonce: foeuuzjzzm
+        run.googleapis.com/startupProbeType: Default
+    spec:
+      containerConcurrency: 80
+      containers:
+      - env:
+        - name: DB_HOST
+          value: /cloudsql/lock-pc-server:us-central1:lock-pc-instance
+        - name: DB_USER
+          value: sysqo82
+        - name: DB_DATABASE
+          value: lockpc_db
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: lock-pc-db-password
+        image: gcr.io/lock-pc-server/lock-pc-server
+        name: lock-pc-server-1
+        ports:
+        - containerPort: 8080
+          name: http1
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 1
+          periodSeconds: 240
+          tcpSocket:
+            port: 8080
+          timeoutSeconds: 240
+      serviceAccountName: 233042610627-compute@developer.gserviceaccount.com
+      timeoutSeconds: 300
+  traffic:
+  - latestRevision: true
+    percent: 100
+status:
+  address:
+    url: https://lock-pc-server-ofzd62cvwq-uc.a.run.app
+  conditions:
+  - lastTransitionTime: '2026-01-26T16:10:31.568163Z'
+    status: 'True'
+    type: Ready
+  - lastTransitionTime: '2026-01-26T16:10:00.645733Z'
+    status: 'True'
+    type: ConfigurationsReady
+  - lastTransitionTime: '2026-01-26T16:10:31.528322Z'
+    status: 'True'
+    type: RoutesReady
+  latestCreatedRevisionName: lock-pc-server-00029-g9s
+  latestReadyRevisionName: lock-pc-server-00029-g9s
+  observedGeneration: 29
+  traffic:
+  - latestRevision: true
+    percent: 100
+    revisionName: lock-pc-server-00029-g9s
+  url: https://lock-pc-server-ofzd62cvwq-uc.a.run.app
