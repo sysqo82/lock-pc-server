@@ -300,3 +300,48 @@ button:hover {
     padding-top: 1.5rem;
     border-top: 2px solid #e0e0e0;
 }
+/* Reminders section styling */
+.reminders-area {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    margin-top: 2rem;
+}
+
+.reminder-item {
+    border: 2px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #fafafa;
+}
+
+.reminder-info {
+    flex: 1;
+}
+
+.reminder-info strong {
+    font-size: 1.1rem;
+    color: #333;
+}
+
+.reminder-details {
+    color: #666;
+    font-size: 0.9rem;
+    margin-top: 0.25rem;
+}
+
+.reminder-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.reminder-form-wrapper {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid #e0e0e0;
+}

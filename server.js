@@ -258,6 +258,69 @@ app.put('/api/block-period/:id', requireAuth, async (req, res) => {
     }
 });
 
+// --- Reminder API Endpoints ---
+app.get('/api/reminder', requireAuth, async (req, res) => {
+    try {
+        const userId = req.userId || (req.session && req.session.userId);
+        const { rows } = await db.query("SELECT id, title, time, days FROM reminders WHERE user_id = $1 ORDER BY id DESC", [userId]);
+        rows.forEach(row => {
+            try {
+                row.days = JSON.parse(row.days || '[]');
+            } catch (e) {
+                row.days = [];
+            }
+        });
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Failed to load reminders.' });
+    }
+});
+
+app.post('/api/reminder', requireAuth, async (req, res) => {
+    const { title, time, days } = req.body;
+    const daysJson = JSON.stringify(days);
+
+    try {
+        const userId = req.userId || (req.session && req.session.userId);
+        const { rows } = await db.query("INSERT INTO reminders (user_id, title, time, days) VALUES ($1, $2, $3, $4) RETURNING id", [userId, title, time, daysJson]);
+        try { await notifyReminderChangeForUser(userId); } catch (e) { console.warn('notifyReminderChangeForUser failed', e); }
+        res.json({ id: rows[0].id, title, time, days });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Failed to save reminder.' });
+    }
+});
+
+app.delete('/api/reminder/:id', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const userId = req.userId || (req.session && req.session.userId);
+        await db.query("DELETE FROM reminders WHERE id = $1 AND user_id = $2", [id, userId]);
+        try { await notifyReminderChangeForUser(userId); } catch (e) { console.warn('notifyReminderChangeForUser failed', e); }
+        res.json({ success: true, message: 'Reminder deleted.' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Failed to delete reminder.' });
+    }
+});
+
+app.put('/api/reminder/:id', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    const { title, time, days } = req.body;
+    const daysJson = JSON.stringify(days);
+
+    try {
+        const userId = req.userId || (req.session && req.session.userId);
+        await db.query("UPDATE reminders SET title = $1, time = $2, days = $3 WHERE id = $4 AND user_id = $5", [title, time, daysJson, id, userId]);
+        try { await notifyReminderChangeForUser(userId); } catch (e) { console.warn('notifyReminderChangeForUser failed', e); }
+        res.json({ success: true, message: 'Reminder updated.' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Failed to update reminder.' });
+    }
+});
+
 // Register a PC and associate it with the authenticated user (stores name and local IP)
 // Only creates pc_settings entry if clientType is 'pc_app'
 app.post('/api/register-pc', requireAuth, async (req, res) => {
@@ -530,6 +593,32 @@ async function notifyScheduleChangeForUser(userId) {
     }
 }
 
+// Notify connected PCs and dashboards for a given user about reminder changes
+async function notifyReminderChangeForUser(userId) {
+    try {
+        const { rows } = await db.query("SELECT id, title, time, days FROM reminders WHERE user_id = $1 ORDER BY id DESC", [userId]);
+        rows.forEach(row => { try { row.days = JSON.parse(row.days || '[]'); } catch(e){ row.days = []; } });
+
+        const pcs = await db.query("SELECT pc_id FROM pc_settings WHERE owner_id = $1", [userId]);
+        for (const r of pcs.rows) {
+            const pcId = r.pc_id;
+            const conn = pcConnections[pcId];
+            if (conn && conn.connected && conn.socketId) {
+                console.log(`Emitting reminder_update to pc ${pcId} (socket ${conn.socketId}), rows=${rows.length}`);
+                io.to(conn.socketId).emit('reminder_update', rows);
+            }
+        }
+        // Also notify any dashboard clients for this user
+        try {
+            io.to(`dashboard:${userId}`).emit('reminder_update', rows);
+        } catch (e) {
+            console.warn('Failed to emit reminder_update to dashboard room', e);
+        }
+    } catch (err) {
+        console.error('Failed to notify reminder change for user', userId, err);
+    }
+}
+
 
 // --- Socket.IO Logic ---
 // Make session available on Socket.IO sockets
@@ -729,6 +818,18 @@ io.on('connection', (socket) => {
                     }
                 } catch (e) {
                     console.warn('Failed to push saved schedule to PC on socket register', e.message || e);
+                }
+                // Also send reminders to the PC
+                try {
+                    const { rows: reminders } = await db.query("SELECT id, title, time, days FROM reminders WHERE user_id = $1 ORDER BY id DESC", [ownerId]);
+                    reminders.forEach(r => { try { r.days = JSON.parse(r.days || '[]'); } catch(e){ r.days = []; } });
+                    const conn = pcConnections[pcId];
+                    if (conn && conn.connected && conn.socketId) {
+                        console.log(`Emitting reminder_update to PC ${pcId} on socket register (socket ${conn.socketId}), rows=${reminders.length}`);
+                        io.to(conn.socketId).emit('reminder_update', reminders);
+                    }
+                } catch (e) {
+                    console.warn('Failed to push saved reminders to PC on socket register', e.message || e);
                 }
             }
         } catch (e) {

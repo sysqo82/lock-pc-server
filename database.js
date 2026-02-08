@@ -78,6 +78,14 @@ async function initDb() {
             days TEXT
         )`);
 
+        await pool.query(`CREATE TABLE IF NOT EXISTS reminders (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            title TEXT,
+            time TEXT,
+            days TEXT
+        )`);
+
         console.log('Database tables created or already exist.');
     } catch (err) {
         console.error('Error initializing database', err);
