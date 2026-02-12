@@ -65,7 +65,8 @@ async function setup() {
     }
 
     pubsub = new PubSub();
-    sub = pubsub.subscription(SUBSCRIPTION_NAME, { flowControl: { maxMessages: 1000 } });
+    const MAX_MESSAGES = parseInt(process.env.SUBSCRIPTION_MAX_MESSAGES || '100', 10);
+    sub = pubsub.subscription(SUBSCRIPTION_NAME, { flowControl: { maxMessages: MAX_MESSAGES } });
 
     // Periodic flush
     setInterval(() => {
