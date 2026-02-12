@@ -26,10 +26,15 @@ async function initDb() {
         }), 15000);
 
         pool = new Pool({
-            ...clientOpts,
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD ? process.env.DB_PASSWORD.trim() : undefined,
-            database: process.env.DB_DATABASE,
+                ...clientOpts,
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD ? process.env.DB_PASSWORD.trim() : undefined,
+                database: process.env.DB_DATABASE,
+                // Pool tuning: limit connections per instance to avoid exhausting Cloud SQL
+                // Allow configuration via env vars; defaults are conservative for Cloud Run
+                max: parseInt(process.env.DB_POOL_MAX || '10', 10),
+                idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10),
+                connectionTimeoutMillis: parseInt(process.env.DB_CONN_TIMEOUT_MS || '10000', 10),
         });
 
         // Test the connection (short timeout)
@@ -89,6 +94,33 @@ async function initDb() {
         console.log('Database tables created or already exist.');
     } catch (err) {
         console.error('Error initializing database', err);
+        // Attempt a simple fallback: if DB_HOST points to a mounted unix socket
+        // (e.g. /cloudsql/INSTANCE) or a plain host, try creating a Pool directly
+        // so workers can connect when the Cloud SQL connector times out.
+        try {
+            const fallbackHost = process.env.DB_HOST;
+            if (fallbackHost) {
+                console.warn('Attempting fallback DB connection using DB_HOST:', fallbackHost);
+                pool = new Pool({
+                    host: fallbackHost,
+                    user: process.env.DB_USER,
+                    password: process.env.DB_PASSWORD ? process.env.DB_PASSWORD.trim() : undefined,
+                    database: process.env.DB_DATABASE,
+                    max: parseInt(process.env.DB_POOL_MAX || '10', 10),
+                    idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10),
+                    connectionTimeoutMillis: parseInt(process.env.DB_CONN_TIMEOUT_MS || '10000', 10),
+                });
+
+                // Test the fallback connection
+                const c = await pool.connect();
+                c.release();
+                console.log('Fallback DB connection successful.');
+                return;
+            }
+        } catch (fallbackErr) {
+            console.error('Fallback DB connection failed:', fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+        }
+
         // Do NOT exit the process here so the container can start for debugging
         // The server will log database errors on runtime queries instead.
         return;
