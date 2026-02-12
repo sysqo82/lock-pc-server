@@ -17,7 +17,24 @@ let buffer = [];
 
 async function flushBuffer() {
     if (buffer.length === 0) return;
-    const entries = buffer.splice(0, buffer.length);
+    const entriesRaw = buffer.splice(0, buffer.length);
+    // If DB pool isn't ready, requeue and skip
+    if (!db.getPool()) {
+        console.warn('DB pool not ready, requeueing', entriesRaw.length);
+        buffer = entriesRaw.concat(buffer);
+        return;
+    }
+
+    // Deduplicate entries by pcId, keep the most recent lastStatusAt
+    const dedup = new Map();
+    for (const item of entriesRaw) {
+        const key = item.pcId;
+        const prev = dedup.get(key);
+        if (!prev || (item.lastStatusAt && item.lastStatusAt > prev.lastStatusAt)) {
+            dedup.set(key, item);
+        }
+    }
+    const entries = Array.from(dedup.values());
     // Build bulk upsert
     const valuesSql = [];
     const params = [];
@@ -33,8 +50,9 @@ async function flushBuffer() {
         console.log(`Batched persisted ${entries.length} pc_status updates (worker)`);
     } catch (e) {
         console.error('Worker bulk persist failed:', e && e.message ? e.message : e);
-        // On failure, requeue items at front
+        // On failure, requeue items at front with a small delay to avoid tight loop
         buffer = entries.concat(buffer);
+        await new Promise(r => setTimeout(r, 500));
     }
 }
 
