@@ -8,6 +8,8 @@ const cookieParser = require('cookie-parser');
 const bcrypt = require('bcrypt');
 const path = require('path');
 const db = require('./database');
+const Redis = require('ioredis');
+const { PubSub } = require('@google-cloud/pubsub');
 
 const app = express();
 const server = http.createServer(app);
@@ -60,6 +62,114 @@ const requireAuth = (req, res, next) => {
 // Map PC ID -> { socketId, status, connected }
 // Only stores live connection state; PC details are fetched from DB on demand
 let pcConnections = {}; 
+
+// Broadcast debounce to avoid querying DB and emitting on every small change
+const BROADCAST_DEBOUNCE_MS = parseInt(process.env.BROADCAST_DEBOUNCE_MS || '1000', 10); // coalesce frequent updates
+let _broadcastTimer = null;
+let _broadcastPending = false;
+
+function scheduleBroadcastUpdate() {
+    if (_broadcastTimer) {
+        _broadcastPending = true;
+        return;
+    }
+    _broadcastTimer = setTimeout(async () => {
+        _broadcastTimer = null;
+        try {
+            await broadcastUpdate();
+        } catch (e) {
+            console.warn('Scheduled broadcastUpdate failed', e);
+        }
+        if (_broadcastPending) {
+            _broadcastPending = false;
+            scheduleBroadcastUpdate();
+        }
+    }, BROADCAST_DEBOUNCE_MS);
+}
+
+// Cache of last-emitted payloads per owner to avoid redundant emits
+const lastEmittedByOwner = {};
+
+// Redis caching (optional). Configure with REDIS_URL or REDIS_HOST/REDIS_PORT
+let redisClient = null;
+try {
+    if (process.env.REDIS_URL) {
+        redisClient = new Redis(process.env.REDIS_URL);
+        console.log('Redis: connected via REDIS_URL');
+    } else if (process.env.REDIS_HOST) {
+        const rOpts = { host: process.env.REDIS_HOST, port: parseInt(process.env.REDIS_PORT || '6379', 10) };
+        if (process.env.REDIS_PASSWORD) rOpts.password = process.env.REDIS_PASSWORD;
+        redisClient = new Redis(rOpts);
+        console.log('Redis: connected via REDIS_HOST');
+    } else {
+        console.log('Redis: not configured (optional)');
+    }
+} catch (e) {
+    console.warn('Redis init failed:', e && e.message ? e.message : e);
+    redisClient = null;
+}
+
+const CACHE_TTL = parseInt(process.env.CACHE_TTL_SEC || '60', 10);
+
+// Batched persistence: coalesce pc_status updates in-memory and flush periodically
+const BATCH_FLUSH_MS = parseInt(process.env.BATCH_FLUSH_MS || '5000', 10);
+// Map pcId -> { status, lastStatusAt }
+const pendingStatusUpdates = new Map();
+
+async function flushPendingStatusUpdates() {
+    if (pendingStatusUpdates.size === 0) return;
+    // Snapshot and clear to avoid blocking incoming updates
+    const entries = Array.from(pendingStatusUpdates.entries());
+    pendingStatusUpdates.clear();
+
+    // Build bulk upsert query
+    const valuesSql = [];
+    const params = [];
+    let idx = 1;
+    for (const [pcId, v] of entries) {
+        valuesSql.push(`($${idx++}, $${idx++}, $${idx++})`);
+        params.push(pcId, v.status, new Date(v.lastStatusAt));
+    }
+    const sql = `INSERT INTO pc_settings (pc_id, last_status, last_status_at) VALUES ${valuesSql.join(',')} ON CONFLICT (pc_id) DO UPDATE SET last_status = EXCLUDED.last_status, last_status_at = EXCLUDED.last_status_at`;
+    try {
+        await db.query(sql, params);
+        console.log(`Batched persisted ${entries.length} pc_status updates`);
+    } catch (e) {
+        console.warn('Batched persistence failed:', e && e.message ? e.message : e);
+        // Re-enqueue on failure to avoid data loss (best-effort)
+        for (const [pcId, v] of entries) pendingStatusUpdates.set(pcId, v);
+    }
+}
+
+// Start periodic flush timer
+setInterval(() => {
+    try { flushPendingStatusUpdates(); } catch (e) { /* ignore */ }
+}, BATCH_FLUSH_MS);
+
+async function cacheGet(key) {
+    if (!redisClient) return null;
+    try {
+        const v = await redisClient.get(key);
+        return v ? JSON.parse(v) : null;
+    } catch (e) {
+        console.warn('cacheGet failed', e && e.message ? e.message : e);
+        return null;
+    }
+}
+
+async function cacheSet(key, value, ttlSec = CACHE_TTL) {
+    if (!redisClient) return;
+    try {
+        await redisClient.set(key, JSON.stringify(value), 'EX', ttlSec);
+    } catch (e) {
+        console.warn('cacheSet failed', e && e.message ? e.message : e);
+    }
+}
+
+async function cacheDel(key) {
+    if (!redisClient) return;
+    try { await redisClient.del(key); } catch (e) { /* ignore */ }
+}
 
 async function startServer() {
     // Log masked DB env presence for debugging (do NOT print the secret itself)
@@ -198,14 +308,16 @@ app.post('/api/command', requireAuth, async (req, res) => {
 app.get('/api/block-period', requireAuth, async (req, res) => {
     try {
         const userId = req.userId || (req.session && req.session.userId);
+        const cacheKey = `block_periods:user:${userId}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) {
+            return res.json(cached);
+        }
         const { rows } = await db.query("SELECT id, from_time as from, to_time as to, days FROM block_periods WHERE user_id = $1 ORDER BY id DESC", [userId]);
         rows.forEach(row => {
-            try {
-                row.days = JSON.parse(row.days || '[]');
-            } catch (e) {
-                row.days = [];
-            }
+            try { row.days = JSON.parse(row.days || '[]'); } catch (e) { row.days = []; }
         });
+        await cacheSet(cacheKey, rows);
         res.json(rows);
     } catch (err) {
         console.error(err);
@@ -222,6 +334,8 @@ app.post('/api/block-period', requireAuth, async (req, res) => {
         const { rows } = await db.query("INSERT INTO block_periods (user_id, from_time, to_time, days) VALUES ($1, $2, $3, $4) RETURNING id", [userId, from, to, daysJson]);
         // Notify connected PCs for this user
         try { await notifyScheduleChangeForUser(userId); } catch (e) { console.warn('notifyScheduleChangeForUser failed', e); }
+        // Invalidate cache for this user's block periods
+        try { await cacheDel(`block_periods:user:${userId}`); } catch (e) { /* ignore */ }
         res.json({ id: rows[0].id, from, to, days });
     } catch (err) {
         console.error(err);
@@ -235,6 +349,7 @@ app.delete('/api/block-period/:id', requireAuth, async (req, res) => {
         const userId = req.userId || (req.session && req.session.userId);
         await db.query("DELETE FROM block_periods WHERE id = $1 AND user_id = $2", [id, userId]);
         try { await notifyScheduleChangeForUser(userId); } catch (e) { console.warn('notifyScheduleChangeForUser failed', e); }
+        try { await cacheDel(`block_periods:user:${userId}`); } catch (e) { /* ignore */ }
         res.json({ success: true, message: 'Block period deleted.' });
     } catch (err) {
         console.error(err);
@@ -251,6 +366,7 @@ app.put('/api/block-period/:id', requireAuth, async (req, res) => {
         const userId = req.userId || (req.session && req.session.userId);
         await db.query("UPDATE block_periods SET from_time = $1, to_time = $2, days = $3 WHERE id = $4 AND user_id = $5", [from, to, daysJson, id, userId]);
         try { await notifyScheduleChangeForUser(userId); } catch (e) { console.warn('notifyScheduleChangeForUser failed', e); }
+        try { await cacheDel(`block_periods:user:${userId}`); } catch (e) { /* ignore */ }
         res.json({ success: true, message: 'Block period updated.' });
     } catch (err) {
         console.error(err);
@@ -262,14 +378,12 @@ app.put('/api/block-period/:id', requireAuth, async (req, res) => {
 app.get('/api/reminder', requireAuth, async (req, res) => {
     try {
         const userId = req.userId || (req.session && req.session.userId);
+        const cacheKey = `reminders:user:${userId}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) return res.json(cached);
         const { rows } = await db.query("SELECT id, title, time, days FROM reminders WHERE user_id = $1 ORDER BY id DESC", [userId]);
-        rows.forEach(row => {
-            try {
-                row.days = JSON.parse(row.days || '[]');
-            } catch (e) {
-                row.days = [];
-            }
-        });
+        rows.forEach(row => { try { row.days = JSON.parse(row.days || '[]'); } catch (e) { row.days = []; } });
+        await cacheSet(cacheKey, rows);
         res.json(rows);
     } catch (err) {
         console.error(err);
@@ -285,6 +399,7 @@ app.post('/api/reminder', requireAuth, async (req, res) => {
         const userId = req.userId || (req.session && req.session.userId);
         const { rows } = await db.query("INSERT INTO reminders (user_id, title, time, days) VALUES ($1, $2, $3, $4) RETURNING id", [userId, title, time, daysJson]);
         try { await notifyReminderChangeForUser(userId); } catch (e) { console.warn('notifyReminderChangeForUser failed', e); }
+        try { await cacheDel(`reminders:user:${userId}`); } catch (e) { /* ignore */ }
         res.json({ id: rows[0].id, title, time, days });
     } catch (err) {
         console.error(err);
@@ -298,6 +413,7 @@ app.delete('/api/reminder/:id', requireAuth, async (req, res) => {
         const userId = req.userId || (req.session && req.session.userId);
         await db.query("DELETE FROM reminders WHERE id = $1 AND user_id = $2", [id, userId]);
         try { await notifyReminderChangeForUser(userId); } catch (e) { console.warn('notifyReminderChangeForUser failed', e); }
+        try { await cacheDel(`reminders:user:${userId}`); } catch (e) { /* ignore */ }
         res.json({ success: true, message: 'Reminder deleted.' });
     } catch (err) {
         console.error(err);
@@ -314,6 +430,7 @@ app.put('/api/reminder/:id', requireAuth, async (req, res) => {
         const userId = req.userId || (req.session && req.session.userId);
         await db.query("UPDATE reminders SET title = $1, time = $2, days = $3 WHERE id = $4 AND user_id = $5", [title, time, daysJson, id, userId]);
         try { await notifyReminderChangeForUser(userId); } catch (e) { console.warn('notifyReminderChangeForUser failed', e); }
+        try { await cacheDel(`reminders:user:${userId}`); } catch (e) { /* ignore */ }
         res.json({ success: true, message: 'Reminder updated.' });
     } catch (err) {
         console.error(err);
@@ -369,8 +486,8 @@ app.post('/api/register-pc', requireAuth, async (req, res) => {
         console.warn('Failed to send schedule to PC after registration:', e.message || e);
     }
 
-    // Notify dashboards about updated PC list
-    try { broadcastUpdate(); } catch (e) { console.warn('broadcastUpdate failed', e); }
+    // Notify dashboards about updated PC list (debounced)
+    try { scheduleBroadcastUpdate(); } catch (e) { console.warn('scheduleBroadcastUpdate failed', e); }
 
     res.json({ success: true });
 });
@@ -552,6 +669,25 @@ app.get('/api/pc/:id/probe', requireAuth, async (req, res) => {
 
         console.log(`Probe finished for pc ${pcId}: start=${start}, finalLast=${conn.lastStatusAt || 0}, finalStatus=${conn.status || 'Unknown'}`);
 
+        // Persist probe result (publish to worker or local batch)
+        try {
+            const payload = { pcId: pcId, status: conn.status || 'Unknown', lastStatusAt: conn.lastStatusAt || Date.now() };
+            if (process.env.PUBSUB_TOPIC) {
+                if (!global.__pubsub) global.__pubsub = new PubSub();
+                const topic = global.__pubsub.topic(process.env.PUBSUB_TOPIC);
+                try {
+                    await topic.publishMessage({ json: payload });
+                } catch (e) {
+                    pendingStatusUpdates.set(pcId, { status: payload.status, lastStatusAt: payload.lastStatusAt });
+                    console.warn('Probe publish failed, enqueued locally', e && e.message ? e.message : e);
+                }
+            } else {
+                pendingStatusUpdates.set(pcId, { status: payload.status, lastStatusAt: payload.lastStatusAt });
+            }
+        } catch (e) {
+            console.warn('Failed to persist probe result', e && e.message ? e.message : e);
+        }
+
         return res.json({ status: conn.status || 'Unknown', lastStatusAt: conn.lastStatusAt || null, probed: true });
     } catch (err) {
         console.error('Probe failed for pc', pcId, err);
@@ -573,6 +709,19 @@ async function notifyScheduleChangeForUser(userId) {
                 if (rows && rows.length > 0) {
                     console.log(`Emitting schedule_update to pc ${pcId} (socket ${conn.socketId}), rows=${rows.length}`);
                     io.to(conn.socketId).emit('schedule_update', rows);
+                    // Persist current known status for this PC because schedule changed
+                    try {
+                        const payload = { pcId: pcId, status: conn.status || 'Unknown', lastStatusAt: conn.lastStatusAt || Date.now() };
+                        if (process.env.PUBSUB_TOPIC) {
+                            if (!global.__pubsub) global.__pubsub = new PubSub();
+                            const topic = global.__pubsub.topic(process.env.PUBSUB_TOPIC);
+                            try { await topic.publishMessage({ json: payload }); } catch (e) { pendingStatusUpdates.set(pcId, { status: payload.status, lastStatusAt: payload.lastStatusAt }); console.warn('Schedule-change publish failed, enqueued locally', e && e.message ? e.message : e); }
+                        } else {
+                            pendingStatusUpdates.set(pcId, { status: payload.status, lastStatusAt: payload.lastStatusAt });
+                        }
+                    } catch (e) {
+                        console.warn('Failed persisting status after schedule change for pc', pcId, e && e.message ? e.message : e);
+                    }
                 } else {
                     console.log(`Not emitting empty schedule_update to pc ${pcId} (socket ${conn.socketId})`);
                 }
@@ -874,19 +1023,11 @@ io.on('connection', (socket) => {
             // Attach pcId to socket for future lookups
             try { socket.pcId = incomingId; } catch (e) { /* ignore */ }
 
-            console.log(`📊 pc_status mapping updated for ${incomingId}`, { prev, nowState: pcConnections[incomingId] });
+            // Update mapping (kept minimal logging)
+            // NOTE: real-time persistence removed to avoid high DB churn. Persist only on explicit probe or when schedule changes.
 
-            // Persist last known status to DB so probes can read authoritative state
-            try {
-                console.log(`💾 Updating database: pc_id=${incomingId}, status=${pcConnections[incomingId].status}`);
-                const result = await db.query("UPDATE pc_settings SET last_status = $1, last_status_at = $2 WHERE pc_id = $3", [pcConnections[incomingId].status, new Date(pcConnections[incomingId].lastStatusAt), incomingId]);
-                console.log(`✅ Database updated for ${incomingId}, rowCount=${result.rowCount}`);
-            } catch (err) {
-                console.error('❌ Error persisting pc_status to DB', err && err.message ? err.message : err);
-            }
-
-            await broadcastUpdate();
-            console.log(`📡 broadcastUpdate completed for ${incomingId}`);
+            // Coalesce broadcast updates (debounced)
+            scheduleBroadcastUpdate();
         } catch (err) {
             console.error('❌ Error handling pc_status', err);
         }
@@ -906,7 +1047,7 @@ io.on('connection', (socket) => {
                 console.error("Error updating last_seen for PC:", err);
             }
 
-            await broadcastUpdate();
+            scheduleBroadcastUpdate();
         } else {
             console.log(`Client disconnected (non-PC or unregistered)`);
         }
@@ -916,7 +1057,8 @@ io.on('connection', (socket) => {
 async function broadcastUpdate() {
     try {
         // Query DB for PC details and emit per-owner pc_update lists to dashboard rooms
-        const { rows } = await db.query("SELECT * FROM pc_settings");
+        // Select only required columns and owned rows to reduce DB scan
+        const { rows } = await db.query("SELECT pc_id, name, last_status, last_status_at, last_seen, owner_id, ip FROM pc_settings WHERE owner_id IS NOT NULL");
 
         // Build per-owner mapping
         const byOwner = {};
@@ -943,9 +1085,15 @@ async function broadcastUpdate() {
             });
         });
 
-        // Emit to each owner's dashboard room
+        // Emit to each owner's dashboard room, but skip emit if payload unchanged
         for (const ownerIdStr of Object.keys(byOwner)) {
             const list = byOwner[ownerIdStr];
+            const payloadStr = JSON.stringify(list);
+            if (lastEmittedByOwner[ownerIdStr] === payloadStr) {
+                console.log(`Skipping emit to dashboard:${ownerIdStr} (no change)`);
+                continue;
+            }
+            lastEmittedByOwner[ownerIdStr] = payloadStr;
             console.log(`Emitting pc_update to dashboard:${ownerIdStr}, pcs=${list.length}`);
             // Log the actual payload for debugging
             list.forEach(pc => {
