@@ -3,8 +3,11 @@ const db = require('./database');
 
 // Config
 const SUBSCRIPTION_NAME = process.env.PUBSUB_SUBSCRIPTION || process.env.PUBSUB_SUB || null;
-const BATCH_FLUSH_MS = parseInt(process.env.WORKER_BATCH_FLUSH_MS || '5000', 10);
-const MAX_BATCH = parseInt(process.env.WORKER_MAX_BATCH || '500', 10);
+const DLQ_TOPIC = process.env.PUBSUB_DLQ_TOPIC || null;
+const BATCH_FLUSH_MS = parseInt(process.env.WORKER_BATCH_FLUSH_MS || '3000', 10);
+const MAX_BATCH = parseInt(process.env.WORKER_MAX_BATCH || '100', 10);
+const MAX_RETRY = parseInt(process.env.WORKER_MAX_RETRY || '4', 10);
+const BACKOFF_BASE_MS = parseInt(process.env.WORKER_BACKOFF_BASE_MS || '200', 10);
 
 if (!SUBSCRIPTION_NAME) {
     console.error('PUBSUB_SUBSCRIPTION not set. Exiting.');
@@ -14,6 +17,8 @@ if (!SUBSCRIPTION_NAME) {
 let pubsub;
 let sub;
 let buffer = [];
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function flushBuffer() {
     if (buffer.length === 0) return;
@@ -25,34 +30,88 @@ async function flushBuffer() {
         return;
     }
 
-    // Deduplicate entries by pcId, keep the most recent lastStatusAt
+    // Deduplicate entries by pcId, keep most recent; collect messages for ack
     const dedup = new Map();
+    const ackMap = new Map();
     for (const item of entriesRaw) {
-        const key = item.pcId;
+        const key = item.payload && (item.payload.pcId || item.payload.id);
+        if (!key) continue;
         const prev = dedup.get(key);
-        if (!prev || (item.lastStatusAt && item.lastStatusAt > prev.lastStatusAt)) {
+        if (!prev || (item.payload && item.payload.lastStatusAt && item.payload.lastStatusAt > prev.payload.lastStatusAt)) {
+            // move previous message into ackMap (older one can be acked)
+            if (prev && prev.message) {
+                // ack the older one since it's superseded
+                try { prev.message.ack(); } catch (e) { /* ignore */ }
+            }
             dedup.set(key, item);
+            ackMap.set(key, item.message);
+        } else {
+            // superseded entry - ack immediately
+            try { item.message.ack(); } catch (e) { /* ignore */ }
         }
     }
+
     const entries = Array.from(dedup.values());
+    if (entries.length === 0) return;
+
     // Build bulk upsert
     const valuesSql = [];
     const params = [];
     let idx = 1;
     for (const item of entries) {
-        // item: { pcId, status, lastStatusAt }
+        const payload = item.payload;
+        const pcId = payload.pcId || payload.id;
+        const status = payload.status || payload.s;
+        const at = payload.lastStatusAt || payload.ts || Date.now();
         valuesSql.push(`($${idx++}, $${idx++}, $${idx++})`);
-        params.push(item.pcId, item.status, new Date(item.lastStatusAt));
+        params.push(pcId, status, new Date(at));
     }
     const sql = `INSERT INTO pc_settings (pc_id, last_status, last_status_at) VALUES ${valuesSql.join(',')} ON CONFLICT (pc_id) DO UPDATE SET last_status = EXCLUDED.last_status, last_status_at = EXCLUDED.last_status_at`;
-    try {
-        await db.query(sql, params);
-        console.log(`Batched persisted ${entries.length} pc_status updates (worker)`);
-    } catch (e) {
-        console.error('Worker bulk persist failed:', e && e.message ? e.message : e);
-        // On failure, requeue items at front with a small delay to avoid tight loop
-        buffer = entries.concat(buffer);
-        await new Promise(r => setTimeout(r, 500));
+
+    // Attempt with retries/backoff
+    let attempt = 0;
+    while (attempt <= MAX_RETRY) {
+        try {
+            await db.query(sql, params);
+            console.log(`Batched persisted ${entries.length} pc_status updates (worker)`);
+            // ack all processed messages
+            for (const item of entries) {
+                try { item.message.ack(); } catch (e) { /* ignore */ }
+            }
+            return;
+        } catch (e) {
+            attempt++;
+            const msg = e && e.message ? e.message : String(e);
+            console.error('Worker bulk persist failed:', msg, `attempt=${attempt}/${MAX_RETRY}`);
+            if (attempt > MAX_RETRY) {
+                // Give up on these entries: push to DLQ if configured, otherwise nack to allow Pub/Sub retry
+                if (DLQ_TOPIC && global.__pubsub) {
+                    try {
+                        const topic = global.__pubsub.topic(DLQ_TOPIC);
+                        for (const item of entries) {
+                            try { topic.publishMessage({ json: item.payload }); } catch (err) { console.error('Failed to publish to DLQ', err); }
+                            try { item.message.ack(); } catch (err) { /* ignore */ }
+                        }
+                        console.warn('Published failed entries to DLQ and acked originals');
+                    } catch (err) {
+                        console.error('DLQ publish overall failed', err);
+                        for (const item of entries) {
+                            try { item.message.nack(); } catch (err2) { /* ignore */ }
+                        }
+                    }
+                } else {
+                    // Nack originals to let Pub/Sub redeliver per subscription policy
+                    for (const item of entries) {
+                        try { item.message.nack(); } catch (err) { /* ignore */ }
+                    }
+                }
+                return;
+            }
+            // exponential backoff
+            const backoff = BACKOFF_BASE_MS * Math.pow(2, attempt - 1);
+            await sleep(backoff);
+            continue;
+        }
     }
 }
 
